@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Backups and local artifacts
+*.bak*
+.dsh/
+node_modules/
+ppt-forge-output/
+ppt-forge-library/
+
+# OS
+.DS_Store
+Thumbs.db
