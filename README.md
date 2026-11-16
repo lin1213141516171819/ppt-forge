@@ -1,5 +1,30 @@
 # PPT 工坊（@local/ppt-forge）
 
+DSH Web GUI 插件：读取现有 `.pptx` 的文字与结构，学习样本风格，按模板或内置版式生成新的 16:9 演示文稿。
+
+## 安装（作为 DSH 插件）
+
+前置条件：DSH 桌面版（带 `dsh` 命令）与 Python 3；DSH 自带运行时已包含 `python-pptx` 1.0.2。
+
+**方式 A：从 Release 安装（推荐）**
+
+1. 从 [Releases](https://github.com/lin1213141516171819/ppt-forge/releases) 下载 `ppt-forge-0.1.3.zip` 并解压；
+2. 把解压出的 `ppt-forge` 目录加入你的 profile：
+
+   ```powershell
+   dsh plugin --profile <profile> add <解压目录>\ppt-forge
+   ```
+
+3. 重启 DSH 桌面应用，插件加载后即可在对话中使用 `ppt_forge` 工具。
+
+**方式 B：直接从仓库安装**
+
+```powershell
+dsh plugin --profile <profile> add https://github.com/lin1213141516171819/ppt-forge
+```
+
+要求 pnpm 能从 git 地址安装；失败时改用方式 A。插件配置见文末「配置」一节。
+
 ## 0.1.3 修复说明
 
 - 模板模式保留全部正文要点和目录项；超过文本框数量的条目合并为最后一个框内的多个段落。请渲染检查长文本是否溢出。
@@ -27,7 +52,7 @@ DSH Web GUI 插件：读取现有 `.pptx` 的文字与结构，学习样本风�
 | 部分 | 说明 |
 | --- | --- |
 | `ppt_forge` 工具 | 对话中由 agent 调用，是主要入口 |
-| 设置页「PPT 工坊」 | 显示运行状态、可用主题与使用方法 |
+| `client.js` | 早期设置面板源码；0.1.2 起 `dsh.client` 声明已移除，不再加载（无独立设置页） |
 | `python/extract.py` | 解析 pptx：每页标题、段落（含层级）、表格、演讲备注、图片数量 |
 | `python/build.py` | 按结构化大纲渲染新 pptx（自由版式） |
 | `python/template_engine.py` | 复制模板页面并改写文字（模板模式） |
