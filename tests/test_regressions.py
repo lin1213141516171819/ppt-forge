@@ -112,16 +112,16 @@ class BuildArgumentsTests(unittest.TestCase):
         self.assertIn('JSON object', json.loads(output.getvalue())['error'])
 
     def test_missing_template_is_not_free_layout(self):
-        ns = load_functions('build.py', {'build'}, {'os': os})
+        ns = load_functions('build.py', {'_build'}, {'os': os})
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(FileNotFoundError, 'template not found'):
-                ns['build']({'template': str(Path(temp) / 'missing.pptx')}, str(Path(temp) / 'out.pptx'))
+                ns['_build']({'template': str(Path(temp) / 'missing.pptx')}, str(Path(temp) / 'out.pptx'))
 
     def test_invalid_template_value_is_rejected(self):
-        ns = load_functions('build.py', {'build'}, {'os': os})
+        ns = load_functions('build.py', {'_build'}, {'os': os})
         for value in ('', '   ', 123):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                ns['build']({'template': value}, 'out.pptx')
+                ns['_build']({'template': value}, 'out.pptx')
 
 
 @unittest.skipUnless(importlib.util.find_spec('lxml'), 'lxml is not installed')

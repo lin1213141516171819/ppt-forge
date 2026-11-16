@@ -127,9 +127,10 @@ def pick_samples(analysis: dict, overrides: dict | None = None) -> dict:
         try:
             index = int(page_number) - 1
         except (TypeError, ValueError):
-            continue
-        if 0 <= index < len(analysis["pages"]):
-            samples[kind] = analysis["pages"][index]
+            raise ValueError(f"samplePages.{kind} must be a 1-based page number")
+        if not 0 <= index < len(analysis["pages"]):
+            raise ValueError(f"samplePages.{kind}={page_number} is outside this template ({len(analysis['pages'])} pages)")
+        samples[kind] = analysis["pages"][index]
     return samples
 
 
@@ -322,14 +323,19 @@ def build_from_template(outline: dict, output_path: str, template_path: str) -> 
     used_types = []
     for spec in slides_spec:
         kind = str(spec.get("type") or "content")
-        if kind not in PAGE_TYPES:
+        fields = spec.get("fieldMap", (outline.get("fieldMap") or {}).get(kind))
+        if kind not in PAGE_TYPES and fields is None:
             raise ValueError(f"template mode does not support slide type {kind!r}; use cover/toc/section/content/end, or omit template for built-in layouts")
         if kind == "cover":
             spec = {**spec, "title": spec.get("title") or outline.get("title"),
                     "subtitle": spec.get("subtitle") or outline.get("subtitle")}
         sample = samples.get(kind) or samples.get("content") or analysis["pages"][0]
         new_slide = duplicate_slide(prs, sample["slide"])
-        rewrite_page(new_slide, spec, kind)
+        if fields is not None:
+            from bindings import rewrite_mapped_page
+            rewrite_mapped_page(new_slide, spec, fields)
+        else:
+            rewrite_page(new_slide, spec, kind)
         kept.append(new_slide)
         used_types.append(kind)
 

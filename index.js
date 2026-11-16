@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -116,6 +117,7 @@ function runPython(python, script, args, { stdin, signal } = {}) {
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => (stdout += chunk));
     child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.stdin.on('error', (error) => rejectPromise(error));
     child.on('error', (error) => rejectPromise(error));
     child.on('close', (code) => {
       let parsed;
@@ -125,7 +127,10 @@ function runPython(python, script, args, { stdin, signal } = {}) {
         parsed = undefined;
       }
       if (parsed && typeof parsed === 'object' && typeof parsed.error === 'string') {
-        rejectPromise(new Error(parsed.error));
+        const error = new Error(parsed.error);
+        error.code = parsed.code;
+        error.issues = parsed.issues;
+        rejectPromise(error);
         return;
       }
       if (code !== 0) {
@@ -152,7 +157,7 @@ function runPython(python, script, args, { stdin, signal } = {}) {
 /** Default project folder inside the session working directory. */
 function defaultOutputPath(cwd, outline) {
   const stem = safeFileStem(outline?.title || outline?.subtitle || 'presentation');
-  return join(cwd, 'ppt-forge-output', `${stem}-${stamp()}`, 'deck.pptx');
+  return join(cwd, 'ppt-forge-output', `${stem}-${stamp()}-${randomUUID().slice(0, 8)}`, 'deck.pptx');
 }
 
 /** List generated decks (only inside the requested working directory). */
@@ -341,7 +346,7 @@ export function apply(ctx, config = {}) {
         } catch {
           parsed = undefined;
         }
-        if (parsed && typeof parsed === 'object' && !parsed.error) {
+        if (code === 0 && parsed && typeof parsed === 'object' && !parsed.error) {
           resolvePromise(parsed);
           return;
         }
@@ -352,33 +357,46 @@ export function apply(ctx, config = {}) {
 
   /** Render a deck into its project preview/ folder and summarize the result. */
   async function renderDeck({ path, cwd, pages, signal }) {
+    if (!python) throw new Error('Python runtime not found. Set pythonPath or DSH_PYTHON.');
     if (!path || typeof path !== 'string') throw new Error('path is required for action=render');
     const deckPath = resolve(cwd, path);
     if (!existsSync(deckPath)) throw new Error(`deck not found: ${deckPath}`);
     const projectDir = dirname(deckPath);
-    const previewDir = join(projectDir, 'preview');
-    // The render CLI requires a fresh output directory; render aside, then publish.
-    const stagingDir = join(projectDir, `.preview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-    const manifest = await runRender({ deckPath, outDir: stagingDir, pages, signal });
-    if (existsSync(previewDir)) {
-      // merge fresh pages over the existing preview, keeping unrendered ones
-      for (const file of readdirSync(stagingDir)) {
-        copyFileSync(join(stagingDir, file), join(previewDir, file));
-      }
-      rmSync(stagingDir, { recursive: true, force: true });
-    } else {
+    const deckSha256 = createHash('sha256').update(readFileSync(deckPath)).digest('hex');
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const stagingDir = join(projectDir, `.preview-${nonce}`);
+    const previewDir = join(projectDir, 'preview', `${safeFileStem(basename(deckPath))}-${deckSha256.slice(0, 12)}-${nonce}`);
+    try {
+      const manifest = await runRender({ deckPath, outDir: stagingDir, pages, signal });
+      mkdirSync(dirname(previewDir), { recursive: true });
       renameSync(stagingDir, previewDir);
+      const images = (manifest.images || []).map((image) => ({ page: image.page, path: join(previewDir, basename(image.path)) }));
+      const quality = await runPython(python, 'quality.py', ['render', deckPath], {
+        stdin: JSON.stringify({ deckSha256, images, missingFonts: manifest.missingFonts || [] }), signal,
+      });
+      return {
+        deck: deckPath,
+        previewDir,
+        pageCount: manifest.pageCount,
+        images,
+        missingFonts: manifest.missingFonts || [],
+        quality,
+        reviewToken: quality.reviewToken,
+      };
+    } catch (error) {
+      if (python && !signal?.aborted) {
+        try {
+          await runPython(python, 'quality.py', ['render', deckPath], {
+            stdin: JSON.stringify({ deckSha256, error: String(error.message || error), images: [] }), signal,
+          });
+        } catch { /* preserve the original render error */ }
+      }
+      throw error;
+    } finally {
+      if (dirname(stagingDir) === projectDir && basename(stagingDir).startsWith('.preview-') && existsSync(stagingDir)) {
+        rmSync(stagingDir, { recursive: true, force: true });
+      }
     }
-    return {
-      deck: deckPath,
-      previewDir,
-      pageCount: manifest.pageCount,
-      images: (manifest.images || []).map((image) => ({
-        page: image.page,
-        path: join(previewDir, basename(image.path)),
-      })),
-      missingFonts: manifest.missingFonts || [],
-    };
   }
 
   /** Shared build operation used by both the tool and the HTTP route. */
@@ -413,6 +431,9 @@ export function apply(ctx, config = {}) {
         slideCount: result.slideCount,
         theme: result.theme,
         mode: result.mode || 'free',
+        qualityReport: result.qualityReport,
+        quality: result.quality,
+        readyForDelivery: false,
         ...(result.pageTypes ? { pageTypes: result.pageTypes } : {}),
         ...(result.samples ? { samples: result.samples } : {}),
       };
@@ -423,9 +444,15 @@ export function apply(ctx, config = {}) {
             dir: preview.previewDir,
             pageCount: preview.pageCount,
             images: preview.images,
+            missingFonts: preview.missingFonts,
           };
+          summary.quality = preview.quality;
+          summary.reviewToken = preview.reviewToken;
         } catch (error) {
           summary.previewError = error instanceof Error ? error.message : String(error);
+          if (result.qualityReport && existsSync(result.qualityReport)) {
+            summary.quality = JSON.parse(readFileSync(result.qualityReport, 'utf8'));
+          }
         }
       }
       return summary;
@@ -491,13 +518,13 @@ export function apply(ctx, config = {}) {
     const dispose = ctx.tools.register({
       name: 'ppt_forge',
       description:
-        'Build, inspect, or learn from PowerPoint decks. action="extract" reads one .pptx and returns its per-slide structure as JSON. action="learn" analyzes a folder of .pptx samples into a reusable style profile under <working directory>/ppt-forge-library/. action="assets" extracts reusable background and decoration images into a local asset library. action="template-add" imports a .pptx into the local template library; "template-list" lists them. action="build" renders a structured outline into a new 16:9 .pptx; pass template (path) or templateName (library) to duplicate template pages and rewrite their text so the deck keeps the template design, or omit both for the built-in layouts. action="render" renders a deck into <projectDir>/preview/*.png for visual review. Typical flow: learn a sample folder, template-add a chosen template, build with samplePages, render and review, fix, rebuild.',
+        'Build, inspect, or learn from PowerPoint decks. extract returns content; inspect returns template shape IDs, names, bounds and estimated capacity; learn analyzes a sample folder; assets extracts images; template-add/template-list manage templates. build validates a structured outline, supports samplePages and explicit fieldMap bindings, and creates an atomic PPTX plus a quality report. render produces versioned previews and a reviewToken. check returns current quality state. After personally inspecting every preview, submit review with that reviewToken and findings (page,severity,message); [] means no visual issues were found. Only readyForDelivery=true indicates completed review of the current deck. Workflow: inspect template, build with fieldMap and render=true, inspect images, review, fix and rebuild if necessary.',
       parameters: {
         action: {
           type: 'string',
           required: true,
           description:
-            'extract = read one source pptx; learn = analyze samples into a style profile; assets = extract reusable background/decoration images; build = render a new deck from an outline; render = render a deck to preview PNGs; template-add = import a .pptx into the template library; template-list = list library templates.',
+            'extract | inspect | learn | assets | build | render | check | review | template-add | template-list',
         },
         path: {
           type: 'string',
@@ -519,7 +546,7 @@ export function apply(ctx, config = {}) {
         output: {
           type: 'string',
           description:
-            'Optional output path for action=build. Defaults to <working directory>/ppt-forge-output/<title>-<timestamp>.pptx.',
+            'Optional output .pptx path for action=build. Defaults to <working directory>/ppt-forge-output/<title>-<timestamp>-<unique-id>/deck.pptx, with an adjacent deck.quality.json report.',
         },
         theme: {
           type: 'string',
@@ -541,9 +568,21 @@ export function apply(ctx, config = {}) {
           description:
             'Optional 1-based template page overrides for template mode, e.g. {cover: 1, section: 4, content: 6, end: 16}. Automatic page classification is heuristic; explicit samples are more reliable.',
         },
+        fieldMap: {
+          type: 'object', additionalProperties: true,
+          description: 'Template bindings keyed by slide type, e.g. {content:{title:{name:"Title"},bullets:[{id:5},{id:6}]}}. Use inspect first. Per-slide outline.slides[].fieldMap overrides this. Every supplied content field must be mapped. Bind table to a table shape; image/images to pictures or placeholders. Unmapped decorative objects are preserved.',
+        },
+        qualityMode: {
+          type: 'string',
+          description: 'warn (default) records estimated layout issues; strict refuses to replace the output when static checks have findings. Both modes require full render and explicit visual review before readyForDelivery becomes true.',
+        },
+        review: {
+          type: 'object', additionalProperties: true,
+          description: 'For action=review: {reviewToken:string, findings:[{page:1,severity:"warning"|"error",message:string}], reviewer?:string}. Submit only after viewing all previews; use [] for findings only if none were found. Stale deck/preview evidence is rejected.',
+        },
         render: {
           type: 'boolean',
-          description: 'For action=build: render the deck to <projectDir>/preview/*.png right after building and return the preview manifest.',
+          description: 'For action=build: render into a new versioned subdirectory under <projectDir>/preview/, returning images, missingFonts, quality and reviewToken. Rendered files still require explicit visual review.',
         },
         pages: {
           type: 'string',
@@ -563,6 +602,17 @@ export function apply(ctx, config = {}) {
         if (exec.agent === undefined) throw new Error('ppt_forge requires an agent Session');
         const cwd = await ctx.workingDirectory.ensure(exec.agent, exec.signal);
         const action = String(args?.action || '');
+        if (action === 'inspect' || action === 'check' || action === 'review') {
+          if (!python) throw new Error('Python runtime not found. Set pythonPath or DSH_PYTHON.');
+          if (!args?.path || typeof args.path !== 'string') throw new Error('path is required');
+          const source = resolve(cwd, args.path);
+          const result = action === 'inspect'
+            ? await runPython(python, 'inspection.py', [source], { signal: exec.signal })
+            : await runPython(python, 'quality.py', [action, source], {
+              ...(action === 'review' ? { stdin: JSON.stringify(args.review || {}) } : {}), signal: exec.signal,
+            });
+          return { action, ...result };
+        }
         if (action === 'extract') {
           const extraction = await extractDeck({ path: args?.path, cwd, signal: exec.signal });
           return { action, ...extraction };
@@ -600,6 +650,8 @@ export function apply(ctx, config = {}) {
           if (args?.samplePages && typeof args.samplePages === 'object') {
             outline = { ...(outline || {}), samplePages: args.samplePages };
           }
+          if (args?.fieldMap !== undefined) outline = { ...(outline || {}), fieldMap: args.fieldMap };
+          if (args?.qualityMode !== undefined) outline = { ...(outline || {}), qualityMode: args.qualityMode };
           const built = await buildDeck({
             outline,
             cwd,
@@ -628,7 +680,7 @@ export function apply(ctx, config = {}) {
           });
           return { action, ...rendered };
         }
-        throw new Error('action must be "extract", "learn", "assets", "build", "render", "template-add", or "template-list"');
+        throw new Error('action must be extract, inspect, learn, assets, build, render, check, review, template-add, or template-list');
       },
     });
     return () => dispose();
@@ -668,10 +720,12 @@ export function apply(ctx, config = {}) {
               if (!python) throw new Error('Python runtime not found on the Host');
               const targetDir = body.cwd ? resolve(String(body.cwd)) : process.cwd();
               const built = await buildDeck({
-                outline: body.outline,
+                outline: { ...body.outline, ...(body.fieldMap !== undefined ? {fieldMap: body.fieldMap} : {}), ...(body.qualityMode !== undefined ? {qualityMode: body.qualityMode} : {}) },
                 cwd: targetDir,
                 output: body.output,
                 theme: body.theme,
+                style: body.style,
+                render: body.render === true,
               });
               sendJson(res, 200, built);
               return;
@@ -679,7 +733,7 @@ export function apply(ctx, config = {}) {
 
             sendText(res, 404, 'not found');
           } catch (error) {
-            sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            sendJson(res, 400, { error: error instanceof Error ? error.message : String(error), code: error.code, issues: error.issues });
           }
         },
       });

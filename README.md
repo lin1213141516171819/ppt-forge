@@ -1,5 +1,17 @@
 # PPT 工坊（@local/ppt-forge）
 
+## 0.2.0 升级
+
+- `inspect` 列出模板对象的 ID、名称、位置、表格尺寸和估算文本容量。
+- `fieldMap` 按名称或 ID 绑定标题、正文、图片和表格，支持单页覆盖。未绑定的品牌装饰保留；全部输入内容都必须有绑定。
+- 所有页面类型均可通过显式映射复用模板；未指定映射时继续使用原有五类页面的自动填充。
+- 生成前集中校验字段、类型、数量及映射，返回带字段路径的错误。生成与静态检查完成后才原子替换目标 PPTX。
+- 输出附带 `.quality.json`，提示文本容量、文本框相交、越界、表格和包内关系问题。估算检查需结合实际预览判断。
+- 渲染结果分版本保存，保留缺失字体信息；文件或预览变动后旧审查结果失效。
+- `check` / `review` 记录验收状态。实际查看全部预览并提交视觉审查后，才可能得到 `readyForDelivery: true`。插件未内置视觉模型 API，静态检查不会自动算作视觉审查。
+
+完整用法见 [0.2.0 使用说明](docs/05-upgrade-0.2.0.md)，示例见 [mapped-outline.json](examples/mapped-outline.json)。
+
 DSH Web GUI 插件：读取现有 `.pptx` 的文字与结构，学习样本风格，按模板或内置版式生成新的 16:9 演示文稿。
 
 ## 安装（作为 DSH 插件）
@@ -8,7 +20,7 @@ DSH Web GUI 插件：读取现有 `.pptx` 的文字与结构，学习样本风�
 
 **方式 A：从 Release 安装（推荐）**
 
-1. 从 [Releases](https://github.com/lin1213141516171819/ppt-forge/releases) 下载 `ppt-forge-0.1.3.zip` 并解压；
+1. 从 [Releases](https://github.com/lin1213141516171819/ppt-forge/releases) 下载 `ppt-forge-0.2.0.zip` 并解压；
 2. 把解压出的 `ppt-forge` 目录加入你的 profile：
 
    ```powershell

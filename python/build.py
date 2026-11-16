@@ -57,6 +57,8 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
+from validation import validate_outline, ValidationError
+from quality import analyze_deck, report_path, write_json
 
 SLIDE_W = 13.333
 SLIDE_H = 7.5
@@ -791,7 +793,7 @@ def stats_slide(presentation, spec: dict, theme: dict, deck: dict, page: int, to
         for index, item in enumerate(items):
             x = 0.75 + index * (card_width + gap)
             add_rect(slide, x, 1.75, card_width, 3.9, theme["soft"], rounded=0.04)
-            value_text = str(item.get("value") or "")
+            value_text = str(item.get("value", ""))
             value_size = base_value_size
             units = _text_units(value_text)
             if units > 0 and units * (value_size / 72.0) > card_width * 0.92:
@@ -814,12 +816,12 @@ def stats_slide(presentation, spec: dict, theme: dict, deck: dict, page: int, to
                 3.3,
                 card_width,
                 0.5,
-                str(item.get("label") or ""),
+                str(item.get("label", "")),
                 label_size,
                 theme["ink"],
                 align=PP_ALIGN.CENTER,
             )
-            note = str(item.get("note") or "")
+            note = str(item.get("note", ""))
             if note:
                 add_text(
                     slide,
@@ -901,7 +903,7 @@ RENDERERS = {
 }
 
 
-def build(outline: dict, output_path: str) -> dict:
+def _build(outline: dict, output_path: str) -> dict:
     """Render one outline into a .pptx file; returns a small summary."""
     template = outline.get("template")
     if template is not None:
@@ -952,6 +954,40 @@ def build(outline: dict, output_path: str) -> dict:
     }
 
 
+def build(outline: dict, output_path: str) -> dict:
+    """Validate, generate aside, inspect, then publish a complete deck atomically."""
+    validate_outline(outline)
+    directory = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(directory, exist_ok=True)
+    descriptor, staging = tempfile.mkstemp(prefix=".ppt-forge-", suffix=".pptx", dir=directory)
+    os.close(descriptor)
+    try:
+        result = _build(outline, staging)
+        report = analyze_deck(staging)
+        # Record missing local assets explicitly even when free layouts use
+        # placeholder boxes. Mapped template images already fail before writing.
+        paths = [(0, outline.get("background"))]
+        offset = report["slideCount"] - len(outline["slides"])
+        for page, slide in enumerate(outline["slides"], 1 + offset):
+            paths.append((page, slide.get("image")))
+            paths.extend((page, path) for path in slide.get("images", []))
+        for page, path in paths:
+            if path and not os.path.isfile(path):
+                report["static"]["findings"].append({"severity": "warning", "code": "MISSING_IMAGE", "page": page,
+                    "message": f"Image not found; generated output may contain a placeholder: {path}"})
+        errors = [item for item in report["static"]["findings"] if item["severity"] == "error"]
+        if errors or outline.get("qualityMode") == "strict" and report["static"]["findings"]:
+            raise ValidationError([{"path": f"page {item.get('page', '?')}", "message": item["code"] + ": " + item["message"]}
+                                   for item in (errors or report["static"]["findings"])])
+        report["deck"] = os.path.abspath(output_path)
+        os.replace(staging, output_path)
+        write_json(report_path(output_path), report)
+        return {**result, "output": output_path, "qualityReport": report_path(output_path), "quality": report}
+    finally:
+        if os.path.exists(staging):
+            os.unlink(staging)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("outline", help="outline JSON path, or - for stdin")
@@ -980,7 +1016,9 @@ def main(argv: list[str]) -> int:
             outline["theme"] = args.theme
         result = build(outline, output_path)
     except Exception as error:
-        print(json.dumps({"error": f"{type(error).__name__}: {error}"}, ensure_ascii=False))
+        print(json.dumps({"error": f"{type(error).__name__}: {error}",
+            "code": getattr(error, "code", "BUILD_FAILED"),
+            **({"issues": error.issues} if hasattr(error, "issues") else {})}, ensure_ascii=False))
         return 1
     print(json.dumps(result, ensure_ascii=False))
     return 0
