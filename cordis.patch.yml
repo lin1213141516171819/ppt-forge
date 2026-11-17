@@ -1,0 +1,6 @@
+- insert:
+    - id: ppt-forge
+      name: '@local/ppt-forge'
+      config:
+        pythonPath: ''
+        defaultTheme: navy

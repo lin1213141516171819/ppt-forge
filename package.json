@@ -1,0 +1,40 @@
+{
+  "name": "@local/ppt-forge",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js && python -m unittest discover -s tests -v",
+    "test:integration": "python -c \"import pptx\" && python -m unittest discover -s tests -p test_integration.py -v"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "python/extract.py",
+    "python/build.py",
+    "python/learn.py",
+    "python/extract_assets.py",
+    "python/template_engine.py",
+    "python/requirements.txt",
+    "python/validation.py",
+    "python/inspection.py",
+    "python/bindings.py",
+    "python/quality.py",
+    "python/edit.py",
+    "examples/*.json",
+    "docs/05-upgrade-0.2.0.md",
+    "docs/06-upgrade-0.3.0.md"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  }
+}
